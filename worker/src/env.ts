@@ -1,3 +1,12 @@
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function repoResolve(p: string): string {
+  return isAbsolute(p) ? p : resolve(REPO_ROOT, p);
+}
+
 export interface WorkerEnv {
   proofBuilderUrl: string;
   sourceChainKey: number;
@@ -67,6 +76,8 @@ export function loadEnv(): WorkerEnv {
     maxProofRetries: positiveNumberEnv('WORKER_MAX_PROOF_RETRIES', 4),
     maxSubmitRetries: positiveNumberEnv('WORKER_MAX_SUBMIT_RETRIES', 3),
     confirmations: numberEnv('WORKER_CONFIRMATIONS', 1) ?? 1,
-    dbPath: optionalEnv('WORKER_DB_PATH') ?? 'worker-state/computecred.sqlite',
+    dbPath: optionalEnv('WORKER_DB_PATH')
+      ? repoResolve(optionalEnv('WORKER_DB_PATH')!)
+      : resolve(REPO_ROOT, 'worker-state', 'computecred.sqlite'),
   };
 }

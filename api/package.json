@@ -5,8 +5,8 @@
   "description": "ComputeCred read layer: exposes the worker's durable proof store and on-chain facility views.",
   "main": "src/server.ts",
   "scripts": {
-    "start": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
+    "start": "node --env-file-if-exists=../.env --import tsx src/server.ts",
+    "dev": "node --watch --env-file-if-exists=../.env --import tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts"
   },

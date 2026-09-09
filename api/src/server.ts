@@ -1,8 +1,14 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { Contract, ethers } from 'ethers';
 import { ReadStore } from './store';
 import { vaultAbi } from './vaultAbi';
+
+const REPO_ROOT = resolve(__dirname, '..', '..');
+
+function repoResolver(): (p: string) => string {
+  return (p: string) => (isAbsolute(p) ? p : resolve(REPO_ROOT, p));
+}
 
 interface ApiEnv {
   port: number;
@@ -24,7 +30,9 @@ function loadEnv(): ApiEnv {
   return {
     port: numberEnv('API_PORT', 8787),
     corsOrigin: process.env.API_CORS_ORIGIN ?? '*',
-    dbPath: resolve(process.env.WORKER_DB_PATH ?? 'worker-state/computecred.sqlite'),
+    dbPath: process.env.WORKER_DB_PATH
+      ? repoResolver()(process.env.WORKER_DB_PATH)
+      : resolve(REPO_ROOT, 'worker-state', 'computecred.sqlite'),
     vaultAddress: process.env.COMPUTE_CRED_VAULT_CONTRACT_ADDRESS ?? ethers.ZeroAddress,
     rpcUrl: process.env.CREDITCOIN_RPC_URL ?? '',
   };
