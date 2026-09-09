@@ -1,4 +1,4 @@
-import { Contract, ethers, Wallet } from 'ethers';
+import { Contract, ethers } from 'ethers';
 import { proofProvider } from '@gluwa/usc-sdk';
 
 export const JOB_SETTLED_TOPIC0 =
@@ -37,16 +37,16 @@ export async function generateProofFor(
 }
 
 /**
- * Submits a proof to the vault via ASCBase.execute(action=0 RegisterSettlement). Returns the
- * transaction response so the caller can wait for it.
+ * Submits a proof to the vault via `verifyAndRegister` — the production, chain-key-guarded
+ * path that preserves `msg.sender` (operator or authorized relayer). Returns the transaction
+ * response hash so the caller can wait for it to mine.
  */
-export function buildExecuteData(vault: Contract, proof: proofProvider.ContinuityResponse): string {
+export function buildVerifyData(vault: Contract, proof: proofProvider.ContinuityResponse): string {
   const fragment = vault.interface.getFunction(
-    'execute(uint8,uint64,uint64,bytes,bytes32,tuple(bytes32,bool)[],bytes32,bytes32[])'
+    'verifyAndRegister(uint64,uint64,bytes,bytes32,tuple(bytes32,bool)[],bytes32,bytes32[])'
   );
-  if (!fragment) throw new Error('vault interface has no execute function');
+  if (!fragment) throw new Error('vault interface has no verifyAndRegister function');
   return vault.interface.encodeFunctionData(fragment, [
-    0, // VaultAction.RegisterSettlement
     proof.chainKey,
     proof.headerNumber,
     proof.txBytes,
@@ -81,37 +81,41 @@ async function estimateGas(
 }
 
 /**
- * Submits a settlement proof to the vault and waits for it to mine. Reverts are surfaced with
- * their short message so the polling loop can decide whether to requeue or drop the event.
+ * Broadcasts settlement calldata (via `verifyAndRegister`) and returns the tx hash WITHOUT
+ * waiting for a block. The caller persists the hash before confirmation so a crash mid-flight is
+ * recovered by reconciliation; the vault's one-time job/query guards make an at-least-once final
+ * outcome idempotent (a duplicate lands as "already processed").
  */
-export async function submitSettlementProof(
+export async function broadcastProof(
   vault: Contract,
-  wallet: Wallet,
+  signer: ethers.Signer,
   creditcoinProvider: ethers.JsonRpcProvider,
   proof: proofProvider.ContinuityResponse
 ): Promise<string> {
-  const data = buildExecuteData(vault, proof);
+  const data = buildVerifyData(vault, proof);
   const continuityBlocks = proof.continuityProof.roots?.length || 1;
-  const gasLimit = await estimateGas(creditcoinProvider, String(vault.target), data, wallet.address, continuityBlocks);
+  const from = await signer.getAddress();
+  const gasLimit = await estimateGas(creditcoinProvider, String(vault.target), data, from, continuityBlocks);
 
-  console.log(`Submitting RegisterSettlement proof for tx ${proof.txHash}...`);
-  const tx = await wallet.sendTransaction({ to: String(vault.target), data, gasLimit });
-  const receipt = await tx.wait(1);
-  if (!receipt) throw new Error(`Transaction ${tx.hash} was dropped`);
-  const parsed = receipt.logs
-    .map((log) => {
-      try {
-        return vault.interface.parseLog({ topics: [...log.topics], data: log.data });
-      } catch {
-        return null;
-      }
-    })
-    .find((p) => p?.name === 'SettlementVerified');
-  if (parsed) {
-    const [operator, jobId, buyer, gross] = parsed.args as unknown as [string, string, string, bigint];
-    console.log(`SettlementVerified operator=${operator} jobId=${jobId} buyer=${buyer} gross=${gross}`);
-  }
+  console.log(`Broadcasting RegisterSettlement proof for tx ${proof.txHash}...`);
+  const tx = await signer.sendTransaction({ to: String(vault.target), data, gasLimit });
+  console.log(`Broadcast sent: ${tx.hash} (now confirmed by reconcile)`);
   return tx.hash;
+}
+
+/** Revert reasons that mean "this work is already done or can never complete" — retrying them is
+ * pointless and would burn gas forever. Everything else is a transient/retryable failure. */
+export function isTerminalRevert(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('already used') ||
+    m.includes('already processed') ||
+    m.includes('wrong source chain') ||
+    m.includes('source contract not registered') ||
+    m.includes('wrong source contract') ||
+    m.includes('unsupported tx type') ||
+    m.includes('jobsettled')
+  );
 }
 
 export function shortMessage(err: unknown): string {

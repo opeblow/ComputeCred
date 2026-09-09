@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Contract, ethers } from 'ethers';
 import { vaultAbi, marketAbi } from './abis';
-import { JOB_SETTLED_TOPIC0, buildExecuteData } from './proof';
+import { JOB_SETTLED_TOPIC0, buildVerifyData, isTerminalRevert } from './proof';
 
 const algo = (name: string, fn: () => void | Promise<void>) => test(name, fn);
 
@@ -48,7 +48,7 @@ algo('market ABI decodes a JobSettled log to the vault tuple layout', async () =
   assert.equal(completedAt, 1_736_000_000n);
 });
 
-algo('buildExecuteData produces an ASCBase.execute(action=0) call', async () => {
+algo('buildVerifyData produces a chain-key-guarded verifyAndRegister call', async () => {
   const vault = new Contract(ethers.ZeroAddress, vaultAbi);
   const proof = {
     chainKey: 1,
@@ -71,12 +71,11 @@ algo('buildExecuteData produces an ASCBase.execute(action=0) call', async () => 
     generatedAt: new Date(),
   };
 
-  const data = buildExecuteData(vault, proof);
+  const data = buildVerifyData(vault, proof);
   const decoded = vault.interface.parseTransaction({ data });
   assert.ok(decoded);
-  assert.equal(decoded.name, 'execute');
-  const [action, chainKey, height, txBytes, merkleRoot, siblings, lowerEndpointDigest, roots] = decoded.args as unknown as [
-    bigint,
+  assert.equal(decoded.name, 'verifyAndRegister');
+  const [chainKey, height, txBytes, merkleRoot, siblings, lowerEndpointDigest, roots] = decoded.args as unknown as [
     bigint,
     bigint,
     string,
@@ -85,7 +84,6 @@ algo('buildExecuteData produces an ASCBase.execute(action=0) call', async () => 
     string,
     string[],
   ];
-  assert.equal(action, 0n);
   assert.equal(chainKey, 1n);
   assert.equal(height, 1000n);
   assert.equal(txBytes, proof.txBytes);
@@ -94,4 +92,15 @@ algo('buildExecuteData produces an ASCBase.execute(action=0) call', async () => 
   assert.equal(siblings[0]!.hash, proof.merkleProof.siblings[0]!.hash);
   assert.equal(lowerEndpointDigest, proof.continuityProof.lowerEndpointDigest);
   assert.deepEqual(Array.from(roots), proof.continuityProof.roots);
+});
+
+algo('revert classification sends idempotent/end-state errors to terminal', () => {
+  assert.ok(isTerminalRevert('ComputeCredVault: job already used'));
+  assert.ok(isTerminalRevert('Query already processed'));
+  assert.ok(isTerminalRevert('ComputeCredVault: wrong source chain'));
+  assert.ok(isTerminalRevert('ComputeCredVault: unsupported tx type'));
+  assert.ok(isTerminalRevert('ComputeCredVault: invalid JobSettled data'));
+  assert.ok(!isTerminalRevert('RPC error: connection reset'));
+  assert.ok(!isTerminalRevert('ComputeCredVault: insufficient liquidity'));
+  assert.ok(!isTerminalRevert('ComputeCredVault: over repay'));
 });

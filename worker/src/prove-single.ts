@@ -1,7 +1,7 @@
 import { Contract, ethers, Wallet, LogDescription } from 'ethers';
 import { vaultAbi, marketAbi } from './abis';
 import { loadEnv } from './env';
-import { generateProofFor, submitSettlementProof, shortMessage, JOB_SETTLED_TOPIC0 } from './proof';
+import { generateProofFor, broadcastProof, shortMessage, JOB_SETTLED_TOPIC0 } from './proof';
 
 /**
  * One-shot: given a source-chain JobSettled tx hash, generate the Attestcoin proof and register
@@ -59,8 +59,12 @@ const main = async () => {
   }
 
   const proof = await generateProofFor(txHashArg, env.sourceChainKey, env.proofBuilderUrl, sourceProvider);
-  const txHash = await submitSettlementProof(vault, wallet, ccProvider, proof);
-  console.log(`Registered settlement for job ${jobId}: ${txHash}`);
+  const destTxHash = await broadcastProof(vault, wallet, ccProvider, proof);
+  const destReceipt = await ccProvider.waitForTransaction(destTxHash, 1, 180_000);
+  if (!destReceipt || destReceipt.status !== 1) {
+    throw new Error(`Proof transaction ${destTxHash} did not confirm on Creditcoin`);
+  }
+  console.log(`Registered settlement for job ${jobId}: ${destTxHash}`);
 };
 
 main().catch((err) => {

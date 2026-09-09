@@ -6,6 +6,7 @@
   "workspaces": [
     "contracts",
     "worker",
+    "api",
     "web"
   ],
   "scripts": {
@@ -15,10 +16,17 @@
     "worker:start": "npm run start -w worker",
     "worker:prove": "npm run prove-one -w worker --",
     "worker:test": "npm run test -w worker",
+    "api:start": "npm run start -w api",
+    "api:test": "npm run test -w api",
     "web:dev": "npm run dev -w web",
     "web:build": "npm run build -w web",
-    "typecheck": "npm run typecheck -w contracts && npm run typecheck -w worker && npm run typecheck -w web",
+    "typecheck": "npm run typecheck -w contracts && npm run typecheck -w worker && npm run typecheck -w api && npm run typecheck -w web",
     "prepare": "npm run contracts:compile",
     "demo": "node scripts/demo.mjs"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "motion": "^11.18.2",
+    "react-router-dom": "^6.30.6"
   }
 }

@@ -1,0 +1,21 @@
+{
+  "name": "computecred-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ComputeCred read layer: exposes the worker's durable proof store and on-chain facility views.",
+  "main": "src/server.ts",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
