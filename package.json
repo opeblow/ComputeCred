@@ -1,0 +1,24 @@
+{
+  "name": "computecred",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ComputeCred - proof-backed revenue financing for independent GPU operators. Attestcoin-verified JobSettled revenue from Ethereum Sepolia reclasses Creditcoin facilities.",
+  "workspaces": [
+    "contracts",
+    "worker",
+    "web"
+  ],
+  "scripts": {
+    "contracts:compile": "npm run compile -w contracts",
+    "contracts:test": "npm run test -w contracts",
+    "worker:dev": "npm run dev -w worker",
+    "worker:start": "npm run start -w worker",
+    "worker:prove": "npm run prove-one -w worker --",
+    "worker:test": "npm run test -w worker",
+    "web:dev": "npm run dev -w web",
+    "web:build": "npm run build -w web",
+    "typecheck": "npm run typecheck -w contracts && npm run typecheck -w worker && npm run typecheck -w web",
+    "prepare": "npm run contracts:compile",
+    "demo": "node scripts/demo.mjs"
+  }
+}
