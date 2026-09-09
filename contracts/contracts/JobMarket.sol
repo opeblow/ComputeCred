@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
 /// @title JobMarket
-/// @notice Minimal GPU-job marketplace deployed on Ethereum Sepolia. A buyer pre-pays (escrows)
-///         native token when creating a job, then settles it once the operator delivers. The
-///         settlement emits the `JobSettled` event, which is the revenue evidence primitive that
-///         ComputeCred proves on Creditcoin.
+/// @notice GPU-job marketplace deployed on an Ethereum-side chain (Sepolia). A buyer pre-pays
+///         escrow in a 6-decimal settlement asset when creating a job, then settles it once the
+///         operator delivers. The settlement emits the `JobSettled` event, which is the revenue
+///         evidence primitive that ComputeCred proves on Creditcoin.
 ///
-/// @dev ComputeCred's threat model relies on this contract emitting `JobSettled` ONLY after a
-///      settlement is complete. A self-reported `submitJob()` call is deliberately absent: a job
-///      the operator merely claimed is NOT revenue. The admission/quality policy of the source
-///      marketplace is therefore explicit in the threat model.
+/// @dev Settlement is denominated in an explicit ERC-20 (the same 6-decimal unit the vault
+///      lends in), so gross amounts never mix native-token (18-dec) value into 6-dec loan
+///      accounting. ComputeCred's threat model relies on this contract emitting `JobSettled`
+///      ONLY after a settlement is complete: a self-reported `submitJob()` call is deliberately
+///      absent. Work quality/admission policy of the marketplace is explicit in the threat model.
 contract JobMarket {
+    using SafeERC20 for IERC20;
+
     struct Job {
         bytes32 id;
         address buyer;
@@ -30,6 +36,10 @@ contract JobMarket {
     /// keccak256("JobSettled(bytes32,address,address,uint128,uint64,bytes32)")
     bytes32 internal constant JOB_SETTLED_EVENT_SIGNATURE =
         0x576d20c6973b5fc107e0f23c395df0170eaed2b08ca42f1192b69c63c0533e92;
+
+    /// @notice The asset jobs are escrowed and settled in. Gross revenue is expressed in its
+    ///         (6-decimal) units; the vault enforces same-decimals against the loan token.
+    IERC20 public immutable settlementToken;
 
     uint256 public nextJobNonce;
     mapping(bytes32 => Job) public jobs;
@@ -51,10 +61,17 @@ contract JobMarket {
     );
     event EscrowWithdrawn(bytes32 indexed jobId, address indexed operator, uint256 amount);
 
-    constructor() {}
+    constructor(address _settlementToken) {
+        require(_settlementToken != address(0), "JobMarket: zero settlement token");
+        settlementToken = IERC20(_settlementToken);
+    }
 
-    /// @notice Notify the marketplace about a job offer. Non-payable: escrow happens at settlement,
-    ///         so no funds are touchable until the buyer actually pays.
+    function settlementAsset() external view returns (address) {
+        return address(settlementToken);
+    }
+
+    /// @notice Buyer creates a job offer for `operator`. No funds move yet; escrow happens at
+    ///         commitment time under `payAndSettle`.
     function createJob(
         address operator,
         bytes32 workloadCommitment
@@ -77,11 +94,13 @@ contract JobMarket {
         emit JobCreated(jobId, msg.sender, operator, 0, workloadCommitment);
     }
 
-    /// @notice Buyer pays `msg.value` and settles a completed job in one transaction. This is the
-    ///         ONLY path to `JobSettled`, and it requires the caller to be the buyer with a created
-    ///         job. The gross amount is frozen on settlement; the operator later withdraws escrow.
-    function payAndSettle(bytes32 jobId) external payable returns (bool) {
-        require(msg.value > 0, "JobMarket: zero payment");
+    /// @notice Buyer locks `amount` of settlement tokens into escrow and settles a completed job
+    ///         in one transaction. This is the ONLY path to `JobSettled`. The gross amount is
+    ///         frozen on settlement; the operator withdraws escrow later (proceeds are payable to
+    ///         the operator wallet, and are NOT automatically remitted to the vault — repayment of
+    ///         a facility draw is a separate, explicit action).
+    function payAndSettle(bytes32 jobId, uint256 amount) external returns (bool) {
+        require(amount > 0, "JobMarket: zero payment");
         require(jobId != bytes32(0), "JobMarket: zero job id");
 
         Job storage job = jobs[jobId];
@@ -89,14 +108,16 @@ contract JobMarket {
         require(!job.settled, "JobMarket: already settled");
         require(msg.sender == job.buyer, "JobMarket: only buyer can settle");
 
-        job.price = msg.value;
+        job.price = amount;
         job.settled = true;
+
+        settlementToken.safeTransferFrom(msg.sender, address(this), amount);
 
         emit JobSettled(
             job.id,
             job.operator,
             job.buyer,
-            uint128(msg.value),
+            uint128(amount),
             uint64(block.timestamp),
             job.workloadCommitment
         );
@@ -115,13 +136,8 @@ contract JobMarket {
         job.withdrawn = true;
         amount = job.price;
 
-        (bool ok, ) = msg.sender.call{value: amount}("");
-        require(ok, "JobMarket: transfer failed");
+        settlementToken.safeTransfer(msg.sender, amount);
 
         emit EscrowWithdrawn(jobId, msg.sender, amount);
     }
-
-    receive() external payable {}
-
-    fallback() external payable {}
 }

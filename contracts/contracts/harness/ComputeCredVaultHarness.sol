@@ -10,12 +10,20 @@ import {EvmV1Decoder} from "@gluwa/asc-contracts/contracts/common/EvmV1Decoder.s
 contract ComputeCredVaultHarness is ComputeCredVault {
     constructor(
         address _loanToken,
+        uint64 _expectedSourceChainKey,
         uint256 _advanceRateBps,
         uint256 _maxBuyerConcentrationBps,
         uint256 _operatorCap,
         uint64 _freshnessWindow
     )
-        ComputeCredVault(_loanToken, _advanceRateBps, _maxBuyerConcentrationBps, _operatorCap, _freshnessWindow)
+        ComputeCredVault(
+            _loanToken,
+            _expectedSourceChainKey,
+            _advanceRateBps,
+            _maxBuyerConcentrationBps,
+            _operatorCap,
+            _freshnessWindow
+        )
     {}
 
     function exposeProcessEvent(uint8 action, bytes32 queryId, bytes memory encodedTransaction) external {
@@ -44,5 +52,17 @@ contract ComputeCredVaultHarness is ComputeCredVault {
 
     function exposeIsInWindow(uint64 settledAt, uint64 nowTs) external view returns (bool) {
         return _inWindow(settledAt, nowTs);
+    }
+
+    function exposeVerifyChain(uint64 chainKey) external view {
+        _requireExpectedChain(chainKey);
+    }
+
+    function exposeFacilityLimit(uint256 eligible, uint256 largest)
+        external
+        view
+        returns (uint256 limit, uint256 factorBps)
+    {
+        return _facilityLimit(eligible, largest);
     }
 }

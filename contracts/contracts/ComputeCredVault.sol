@@ -2,7 +2,9 @@
 pragma solidity ^0.8.28;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {ASCBase} from "@gluwa/asc-contracts/contracts/readability/ASCBase.sol";
@@ -20,17 +22,23 @@ import {INativeQueryVerifier} from "@gluwa/asc-contracts/contracts/write-ability
 ///
 /// Credit policy (deterministic, visible on-chain):
 ///   - eligibleRevenue   = min(revenueWindowed30d, operatorCap)
-///   - facilityLimit     = 50% x eligibleRevenue            (advanceRateBps)
-///   - concentration     = the share of the largest buyer above 40% of eligibleRevenue
-///                         is not financed: book = eligible - max(0, largest - 40% x eligible)
-///   - replay            = txHash (via proof query id) AND jobId are one-time
+///   - concentration     = the share of the largest buyer above 40% of the ELIGIBLE base is not
+///                         financed: book = eligible - max(0, min(largest, eligible) - 40% x eligible)
+///                         (the largest buyer is capped to the eligible base so the cap and the
+///                         haircut compose predictably)
+///   - facilityLimit     = 50% x book            (advanceRateBps)
 ///   - draw        <= facilityLimit - outstandingDebt && vault liquidity
-///   - auto-repay        = each verified settlement first pays accrued debt, then revenue
+///   - repay       = ONLY an actual transfer of loanToken reduces debt. Verified revenue grows the
+///                   credit line but never touches debt: revenue recognition and repayment are kept
+///                   strictly separate because the vault does not receive the source proceeds.
+///   - replay            = tx (via proof query id) AND jobId are one-time
+///   - source binding    = trusted chain key, trusted jobMarket contract, trusted settlement asset
+///   - emergency         = borrowing (openFacility, draw) can be paused without blocking repayments
 ///
 /// The receipt proves a trusted source-market contract settled the job; it does NOT prove that
-/// physical GPU work was delivered. The source marketplace's admission/quality policy is
-/// therefore explicit in the threat model.
-contract ComputeCredVault is Ownable, ASCBase {
+/// physical GPU work was delivered, and a valid payment is not proof of creditworthiness.
+/// The source marketplace's admission/quality policy is explicit in the threat model.
+contract ComputeCredVault is Ownable, Pausable, ASCBase {
     using SafeERC20 for IERC20;
 
     /// keccak256("JobSettled(bytes32,address,address,uint128,uint64,bytes32)")
@@ -42,6 +50,11 @@ contract ComputeCredVault is Ownable, ASCBase {
     uint256 public constant MAX_BATCH_SIZE = 10;
     /// Tolerance for wall-clock skew between the source chain and Creditcoin.
     uint64 public constant CLOCK_SKEW_TOLERANCE = 3600;
+    /// Loan and settlement assets are test stablecoins with 6 decimals (1:1 valuation).
+    uint8 public constant LOAN_TOKEN_DECIMALS = 6;
+    /// Storage bound per facility: keeps the on-chain event scan bounded under high volume.
+    /// The durable worker database keeps full per-job history; the chain keeps the credit math.
+    uint256 public constant MAX_WINDOW_EVENTS = 256;
 
     enum VaultAction {
         RegisterSettlement // 0
@@ -59,7 +72,7 @@ contract ComputeCredVault is Ownable, ASCBase {
         bool exists;
         uint256 outstandingDebt;
         uint256 lifetimeVerifiedRevenue;
-        uint256 lifetimeDebtRepaidByRevenue;
+        uint256 lifetimeRepaid;
         uint64 lastVerifiedAt;
         RevenueEvent[] events;
     }
@@ -76,7 +89,7 @@ contract ComputeCredVault is Ownable, ASCBase {
         uint256 largestBuyerShareBps;
         uint64 lastVerifiedAt;
         uint256 lifetimeVerifiedRevenue;
-        uint256 lifetimeDebtRepaidByRevenue;
+        uint256 lifetimeRepaid;
         uint256 eventCount;
     }
 
@@ -84,11 +97,18 @@ contract ComputeCredVault is Ownable, ASCBase {
 
     /// @notice Loan/liquidity token held by the vault (test USDC on CC3).
     IERC20 public immutable loanToken;
-    /// @notice The single Ethereum-side marketplace contract whose `JobSettled` events are trusted.
+    /// @notice The single trusted Ethereum-side marketplace whose `JobSettled` events are revenue.
     address public jobMarket;
+    /// @notice The asset the source market pays in. Same 6-dec decimals as the loan token,
+    ///         valued 1:1 for the prototype (no FX model). Units are explicit so gross amounts
+    ///         can never silently mix native-token (18-dec) values into 6-dec loan accounting.
+    address public settlementAsset;
+    /// @notice Creditcoin chain key of the source chain (1 == Ethereum/Sepolia). All proof
+    ///         verification entry points reject any other chain before touching state.
+    uint64 public expectedSourceChainKey;
     /// @notice Advance rate, in basis points (5000 == 50%).
     uint256 public advanceRateBps;
-    /// @notice Max share of eligibleRevenue a single buyer may supply (4000 == 40%).
+    /// @notice Max share of eligible revenue a single buyer may supply (4000 == 40%).
     uint256 public maxBuyerConcentrationBps;
     /// @notice Revenue cap applied before the advance rate (per operator).
     uint256 public operatorCap;
@@ -96,13 +116,16 @@ contract ComputeCredVault is Ownable, ASCBase {
     uint64 public freshnessWindow;
 
     mapping(address => Facility) public facilities;
-    mapping(address => RevenueEvent[]) public facilityEvents;
     /// @notice Job-level replay guard. Tx-level replay is guarded by ASCBase.processedQueries.
     mapping(bytes32 => bool) public usedJobIds;
+    /// @notice Facilities may authorize a scoped submitter (e.g. a hosted worker) to register
+    ///         settlements on their behalf. Scoped = settlements only; it can never draw or repay.
+    mapping(address operator => mapping(address submitter => bool)) public authorizedRelayers;
 
     event FacilityOpened(address indexed operator, address loanToken);
-    event SourceContractRegistered(address indexed jobMarket);
+    event SourceContractRegistered(address indexed jobMarket, address indexed settlementAsset);
     event PolicyUpdated(bytes32 indexed reason);
+    event RelayerSet(address indexed operator, address indexed relayer, bool authorized);
     event SettlementVerified(
         address indexed operator,
         bytes32 indexed jobId,
@@ -111,22 +134,27 @@ contract ComputeCredVault is Ownable, ASCBase {
         uint256 revenueApplied,
         bytes32 queryId
     );
-    event DebtRepaidByRevenue(address indexed operator, uint256 amount, bytes32 jobId);
     event Drew(address indexed operator, uint256 amount);
     event Repaid(address indexed operator, uint256 amount);
     event LiquidityProvided(address indexed provider, uint256 amount);
 
     constructor(
         address _loanToken,
+        uint64 _expectedSourceChainKey,
         uint256 _advanceRateBps,
         uint256 _maxBuyerConcentrationBps,
         uint256 _operatorCap,
         uint64 _freshnessWindow
     ) Ownable(msg.sender) {
         require(_loanToken != address(0), "ComputeCredVault: zero token");
+        require(
+            IERC20Metadata(_loanToken).decimals() == LOAN_TOKEN_DECIMALS,
+            "ComputeCredVault: loan token must be 6 decimals"
+        );
         require(_advanceRateBps <= BASIS_POINTS, "ComputeCredVault: advance rate > 100%");
         require(_maxBuyerConcentrationBps <= BASIS_POINTS, "ComputeCredVault: concentration > 100%");
         loanToken = IERC20(_loanToken);
+        expectedSourceChainKey = _expectedSourceChainKey;
         advanceRateBps = _advanceRateBps;
         maxBuyerConcentrationBps = _maxBuyerConcentrationBps;
         operatorCap = _operatorCap;
@@ -137,11 +165,19 @@ contract ComputeCredVault is Ownable, ASCBase {
     // Owner configuration
     // ----------------------------------------------------------------------
 
-    /// @notice Registers the single trusted source-chain marketplace contract.
-    function registerSourceContract(address _jobMarket) external onlyOwner {
+    /// @notice Registers the single trusted source-chain marketplace AND the asset it settles in.
+    ///         Gross amounts in `JobSettled` are units of `settlementAsset` (6 decimals, 1:1 with
+    ///         the loan token). A settlement asset whose decimals diverge is rejected.
+    function registerSourceContract(address _jobMarket, address _settlementAsset) external onlyOwner whenNotPaused {
         require(_jobMarket != address(0), "ComputeCredVault: zero source");
+        require(_settlementAsset != address(0), "ComputeCredVault: zero settlement asset");
+        require(
+            IERC20Metadata(_settlementAsset).decimals() == LOAN_TOKEN_DECIMALS,
+            "ComputeCredVault: settlement asset must be 6 decimals"
+        );
         jobMarket = _jobMarket;
-        emit SourceContractRegistered(_jobMarket);
+        settlementAsset = _settlementAsset;
+        emit SourceContractRegistered(_jobMarket, _settlementAsset);
     }
 
     function setAdvanceRateBps(uint256 _advanceRateBps) external onlyOwner {
@@ -166,12 +202,22 @@ contract ComputeCredVault is Ownable, ASCBase {
         emit PolicyUpdated("freshness");
     }
 
+    /// @notice Emergency stop for NEW borrowing. Repayments stay open so operators can always
+    ///         reduce debt during an incident.
+    function pauseBorrowing() external onlyOwner {
+        _pause();
+    }
+
+    function unpauseBorrowing() external onlyOwner {
+        _unpause();
+    }
+
     // ----------------------------------------------------------------------
     // Operator / liquidity provider actions
     // ----------------------------------------------------------------------
 
     /// @notice A GPU operator opens a facility. Ownership = the calling Creditcoin wallet.
-    function openFacility() external {
+    function openFacility() external whenNotPaused {
         Facility storage f = facilities[msg.sender];
         require(!f.exists, "ComputeCredVault: facility exists");
         f.exists = true;
@@ -186,7 +232,7 @@ contract ComputeCredVault is Ownable, ASCBase {
     }
 
     /// @notice Operator draws against available capacity.
-    function draw(uint256 amount) external {
+    function draw(uint256 amount) external whenNotPaused {
         require(amount > 0, "ComputeCredVault: zero amount");
         Facility storage f = facilities[msg.sender];
         require(f.exists, "ComputeCredVault: facility not open");
@@ -204,7 +250,10 @@ contract ComputeCredVault is Ownable, ASCBase {
         emit Drew(msg.sender, amount);
     }
 
-    /// @notice Manual repayment of accrued debt (auto-repay from verified revenue also applies).
+    /// @notice Manual repayment. Accrued debt can ONLY decrease by an actual transfer of loan
+    ///         tokens into the vault. Verified revenue never touches `outstandingDebt` — the vault
+    ///         does not receive source-chain proceeds, and treating receipts as repayment would
+    ///         let debt disappear without the vault's assets being replenished.
     function repay(uint256 amount) external {
         require(amount > 0, "ComputeCredVault: zero amount");
         Facility storage f = facilities[msg.sender];
@@ -212,7 +261,19 @@ contract ComputeCredVault is Ownable, ASCBase {
         require(amount <= f.outstandingDebt, "ComputeCredVault: over repay");
         loanToken.safeTransferFrom(msg.sender, address(this), amount);
         f.outstandingDebt -= amount;
+        f.lifetimeRepaid += amount;
         emit Repaid(msg.sender, amount);
+    }
+
+    /// @notice Operator authorizes a scoped submitter (e.g. a hosted proof worker) to register
+    ///         settlements for their facility. The relayer can only submit proofs — it cannot
+    ///         open a facility, draw, repay, or change policy.
+    function setRelayer(address relayer, bool authorized) external {
+        require(relayer != address(0), "ComputeCredVault: zero relayer");
+        require(relayer != msg.sender, "ComputeCredVault: caller is already the operator");
+        require(facilities[msg.sender].exists, "ComputeCredVault: facility not open");
+        authorizedRelayers[msg.sender][relayer] = authorized;
+        emit RelayerSet(msg.sender, relayer, authorized);
     }
 
     // ----------------------------------------------------------------------
@@ -220,7 +281,7 @@ contract ComputeCredVault is Ownable, ASCBase {
     // ----------------------------------------------------------------------
 
     /// @notice Verify a batch of up to 10 source transactions sharing one continuity proof, then
-    ///         apply the credit policy for each settlement in order.
+    ///         apply the credit policy for each settlement in order. Chain-key guarded.
     function verifyAndRegisterBatch(
         uint64 chainKey,
         uint64[] calldata blockHeights,
@@ -228,6 +289,7 @@ contract ComputeCredVault is Ownable, ASCBase {
         INativeQueryVerifier.MerkleProof[] calldata merkleProofs,
         INativeQueryVerifier.ContinuityProof calldata continuityProof
     ) external returns (bool) {
+        _requireExpectedChain(chainKey);
         uint256 n = encodedTransactions.length;
         require(n > 0 && n <= MAX_BATCH_SIZE, "ComputeCredVault: bad batch size");
         require(
@@ -247,14 +309,17 @@ contract ComputeCredVault is Ownable, ASCBase {
 
         for (uint256 i = 0; i < n; ++i) {
             bytes32 queryId = _computeQueryId(chainKey, blockHeights[i], merkleProofs[i].root, merkleProofs[i].siblings);
-            require(!processedQueries[queryId], "Query already processed");
+            require(!processedQueries[queryId], "ComputeCredVault: query already processed");
             processedQueries[queryId] = true;
             _processAndEmitEvent(uint8(VaultAction.RegisterSettlement), queryId, encodedTransactions[i]);
         }
         return true;
     }
 
-    /// @notice Convenience wrapper named exactly as in the design: verify one proof, then credit.
+    /// @notice The production single-settlement path. Chain-key guarded and call-identity
+    ///         preserving: it performs the same verify/dedupe/apply sequence as `execute`, but
+    ///         WITHOUT an external self-call, so `msg.sender` (the operator or an authorized
+    ///         relayer) survives into `_processAndEmitEvent`.
     function verifyAndRegister(
         uint64 chainKey,
         uint64 blockHeight,
@@ -264,8 +329,12 @@ contract ComputeCredVault is Ownable, ASCBase {
         bytes32 lowerEndpointDigest,
         bytes32[] calldata continuityRoots
     ) external returns (bool) {
-        return this.execute(
-            uint8(VaultAction.RegisterSettlement),
+        _requireExpectedChain(chainKey);
+
+        bytes32 queryId = _computeQueryId(chainKey, blockHeight, merkleRoot, siblings);
+        require(!processedQueries[queryId], "ComputeCredVault: query already processed");
+
+        bool verified = _verifyProof(
             chainKey,
             blockHeight,
             encodedTransaction,
@@ -274,11 +343,19 @@ contract ComputeCredVault is Ownable, ASCBase {
             lowerEndpointDigest,
             continuityRoots
         );
+        require(verified, "ComputeCredVault: proof verification failed");
+
+        processedQueries[queryId] = true;
+        _processAndEmitEvent(uint8(VaultAction.RegisterSettlement), queryId, encodedTransaction);
+        return true;
     }
 
     /// @dev ASCBase hook: strict receipt validation + deterministic credit policy. Reverts on any
     ///      invalid, malformed, wrong-contract, wrong-event, failed, stale, or replayed input —
     ///      making Attestcoin a state-transition gate, not a dashboard API call.
+    ///      NOTE: the inherited generic `execute(...)` entry point is intentionally not the
+    ///      production path (it cannot be chain-key guarded without forking ASCBase). Production
+    ///      workflows use `verifyAndRegister` / `verifyAndRegisterBatch`.
     function _processAndEmitEvent(
         uint8 action,
         bytes32 queryId,
@@ -287,7 +364,7 @@ contract ComputeCredVault is Ownable, ASCBase {
         if (action != uint8(VaultAction.RegisterSettlement)) revert InvalidAction(action);
 
         RevenueEvent memory ev = _extractSettlement(encodedTransaction);
-        require(msg.sender == ev.operator, "ComputeCredVault: operator mismatch");
+        require(_isAuthorized(ev.operator, msg.sender), "ComputeCredVault: operator mismatch");
 
         Facility storage f = facilities[ev.operator];
         require(f.exists, "ComputeCredVault: facility not open");
@@ -295,36 +372,27 @@ contract ComputeCredVault is Ownable, ASCBase {
         require(!usedJobIds[ev.jobId], "ComputeCredVault: job already used");
         usedJobIds[ev.jobId] = true;
 
-        // A later verified settlement first pays accrued debt, then contributes to revenue.
-        uint256 debtPayment = ev.amount <= f.outstandingDebt ? ev.amount : f.outstandingDebt;
-        if (debtPayment > 0) {
-            f.outstandingDebt -= debtPayment;
-            f.lifetimeDebtRepaidByRevenue += debtPayment;
-            emit DebtRepaidByRevenue(ev.operator, debtPayment, ev.jobId);
-        }
-        uint256 revenueApplied = ev.amount - debtPayment;
-        if (revenueApplied > 0) {
-            f.lifetimeVerifiedRevenue += revenueApplied;
-            f.events.push(
-                RevenueEvent({
-                    amount: revenueApplied,
-                    settledAt: ev.settledAt,
-                    buyer: ev.buyer,
-                    jobId: ev.jobId,
-                    operator: ev.operator
-                })
-            );
-        }
+        // Revenue recognition only. Deliberately does NOT reduce outstandingDebt — the vault never
+        // receives the source proceeds, so doing so would be fictional repayment.
+        f.lifetimeVerifiedRevenue += ev.amount;
+        f.events.push(
+            RevenueEvent({
+                amount: ev.amount,
+                settledAt: ev.settledAt,
+                buyer: ev.buyer,
+                jobId: ev.jobId,
+                operator: ev.operator
+            })
+        );
         f.lastVerifiedAt = ev.settledAt;
 
         _pruneEvents(f);
-        emit SettlementVerified(ev.operator, ev.jobId, ev.buyer, uint128(ev.amount), revenueApplied, queryId);
+        emit SettlementVerified(ev.operator, ev.jobId, ev.buyer, uint128(ev.amount), ev.amount, queryId);
     }
 
     /// @dev Decodes and strictly validates a settlement log from a proven source receipt. Every
-    ///      security property the strategy demands is checked here:
-    ///      success status, correct topic, registered emitter, arity, nonzero amount, freshness,
-    ///      and correct claimant.
+    ///      security property is checked here: success status, correct topic, registered emitter,
+    ///      arity, nonzero amount, freshness, and correct claimant.
     function _extractSettlement(bytes memory encodedTransaction) internal view returns (RevenueEvent memory ev) {
         uint8 txType = EvmV1Decoder.getTransactionType(encodedTransaction);
         require(EvmV1Decoder.isValidTransactionType(txType), "ComputeCredVault: unsupported tx type");
@@ -342,7 +410,6 @@ contract ComputeCredVault is Ownable, ASCBase {
         require(log.address_ == jobMarket, "ComputeCredVault: wrong source contract");
 
         require(log.topics.length == 4, "ComputeCredVault: invalid JobSettled topics");
-        // topics[0] is guaranteed to be JOB_SETTLED_EVENT_SIGNATURE: the decoder above filtered on it.
         require(log.data.length == 96, "ComputeCredVault: invalid JobSettled data");
 
         ev.jobId = log.topics[1];
@@ -386,7 +453,7 @@ contract ComputeCredVault is Ownable, ASCBase {
         view_.largestBuyerShareBps = total == 0 ? 0 : (largest * BASIS_POINTS) / total;
         view_.lastVerifiedAt = f.lastVerifiedAt;
         view_.lifetimeVerifiedRevenue = f.lifetimeVerifiedRevenue;
-        view_.lifetimeDebtRepaidByRevenue = f.lifetimeDebtRepaidByRevenue;
+        view_.lifetimeRepaid = f.lifetimeRepaid;
         view_.eventCount = _windowedEventCount(f);
     }
 
@@ -412,6 +479,14 @@ contract ComputeCredVault is Ownable, ASCBase {
     // Internal
     // ----------------------------------------------------------------------
 
+    function _requireExpectedChain(uint64 chainKey) internal view {
+        require(chainKey == expectedSourceChainKey, "ComputeCredVault: wrong source chain");
+    }
+
+    function _isAuthorized(address operator, address caller) internal view returns (bool) {
+        return caller == operator || authorizedRelayers[operator][caller];
+    }
+
     function _windowedEventCount(Facility storage f) internal view returns (uint256 count) {
         uint64 nowTs = uint64(block.timestamp);
         uint256 n = f.events.length;
@@ -425,7 +500,11 @@ contract ComputeCredVault is Ownable, ASCBase {
         return settledAt >= minTs && settledAt <= nowTs + CLOCK_SKEW_TOLERANCE;
     }
 
-    /// @dev Compacts storage, dropping events outside the freshness window.
+    /// @dev Compacts storage: drops events outside the freshness window, then caps the windowed
+    ///      set to MAX_WINDOW_EVENTS (keeping the newest). Events are chronological, so dropping
+    ///      the head of the windowed set is dropping the oldest settled revenue first. This bounds
+    ///      the per-facility scan so aggregation gas stays predictable under high settlement
+    ///      volume; the worker's durable database keeps full per-job history.
     function _pruneEvents(Facility storage f) internal {
         uint64 nowTs = uint64(block.timestamp);
         uint256 n = f.events.length;
@@ -436,11 +515,20 @@ contract ComputeCredVault is Ownable, ASCBase {
                 ++writeIdx;
             }
         }
-        while (f.events.length > writeIdx) f.events.pop();
+        uint256 keep = writeIdx;
+        if (keep > MAX_WINDOW_EVENTS) {
+            uint256 tail = keep - MAX_WINDOW_EVENTS;
+            for (uint256 i = 0; i < MAX_WINDOW_EVENTS; ++i) {
+                f.events[i] = f.events[tail + i];
+            }
+            keep = MAX_WINDOW_EVENTS;
+        }
+        while (f.events.length > keep) f.events.pop();
     }
 
     /// @dev Aggregates windowed revenue. Returns the raw window total, the capped eligible
-    ///      revenue, per-buyer totals, and the largest single-buyer amount.
+    ///      revenue, per-buyer totals, and the largest single-buyer amount. Bounded by
+    ///      MAX_WINDOW_EVENTS storage.
     function _aggregate(Facility storage f)
         internal
         view
@@ -480,12 +568,10 @@ contract ComputeCredVault is Ownable, ASCBase {
     }
 
     /// @dev Computes the facility limit. Concentration is priced as "the portion of the largest
-    ///      buyer above 40% of the eligible base is not financed":
-    ///        book   = eligible - max(0, largestBuyer - 0.40 * eligible)
-    ///        limit  = advanceRate * book
-    ///      This keeps the strategy's base formula (limit = 0.50 * eligible) exactly when revenue
-    ///      is diversified (largest buyer <= 40%), while a single-client operator is still
-    ///      bookable but only finances the diversified-equivalent portion of their base.
+    ///      buyer above maxBuyerConcentrationBps of the ELIGIBLE base is not financed".
+    ///      The largest buyer is capped to `eligible` first, so the operator cap and the
+    ///      concentration haircut compose predictably: capping the base never produces a negative
+    ///      or surprising zero limit for a plausible diversified portfolio.
     function _facilityLimit(
         uint256 eligible,
         uint256 largest
@@ -493,6 +579,7 @@ contract ComputeCredVault is Ownable, ASCBase {
         if (eligible == 0) {
             return (0, BASIS_POINTS);
         }
+        if (largest > eligible) largest = eligible;
         uint256 allowedShare = (eligible * maxBuyerConcentrationBps) / BASIS_POINTS;
         uint256 excess = largest > allowedShare ? largest - allowedShare : 0;
         uint256 book = eligible > excess ? eligible - excess : 0;
