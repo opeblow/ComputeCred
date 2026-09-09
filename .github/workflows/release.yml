@@ -1,0 +1,57 @@
+name: Release / CD
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        run: npm run contracts:compile
+
+      - name: Full verification
+        run: |
+          npm run typecheck
+          npm run contracts:test
+          npm run worker:test
+          npm run demo
+
+      - name: Build web bundle
+        run: npm run web:build
+
+      - name: Package release artifacts
+        run: |
+          mkdir -p release
+          cp -r web/dist release/web-dashboard
+          tar -czf release/web-dashboard.tar.gz -C release web-dashboard
+          node scripts/build-report.mjs > release/build-report.txt 2>/dev/null || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ComputeCred ${{ github.ref_name }}
+          tag_name: ${{ github.ref }}
+          generate_release_notes: true
+          files: |
+            release/web-dashboard.tar.gz
+            release/build-report.txt
