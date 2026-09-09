@@ -83,14 +83,10 @@ a:hover {
 .brand-mark {
   width: 34px;
   height: 34px;
-  border-radius: var(--r-md);
-  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: -0.02em;
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  display: block;
+  flex-shrink: 0;
 }
 
 .brand-name {

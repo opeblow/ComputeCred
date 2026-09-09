@@ -32,7 +32,7 @@ export default function AppShell() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">CC</div>
+          <img className="brand-mark" src="/logo.svg" alt="ComputeCred" width={34} height={34} />
           <div>
             <div className="brand-name">ComputeCred</div>
             <div className="muted small">proof-backed financing</div>

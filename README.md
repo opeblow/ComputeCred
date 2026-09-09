@@ -1,5 +1,9 @@
 # ComputeCred
 
+<p align="center">
+  <img src="web/public/logo.svg" alt="ComputeCred logo" width="96" height="96" />
+</p>
+
 **Proof-backed revenue financing for independent GPU operators.**
 
 Independent GPU operators serve jobs on an Ethereum-side job marketplace where demand-side
