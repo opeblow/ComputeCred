@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ethers } from 'ethers';
 
 const CC3_CHAIN_ID = '0x913'; // 2323
@@ -34,15 +34,11 @@ function injectedProvider(): ethers.Eip1193Provider | null {
 
 export function useWallet(): WalletHook {
   const [state, setState] = useState<WalletState>({ status: 'disconnected', address: null, noWallet: false });
-  const openedRef = useRef(false);
 
   const connect = useCallback(async () => {
     const eth = injectedProvider();
     if (!eth) {
-      if (!openedRef.current) {
-        window.open(METAMASK_DOWNLOAD, '_blank', 'noopener,noreferrer');
-        openedRef.current = true;
-      }
+      window.open(METAMASK_DOWNLOAD, '_blank', 'noopener,noreferrer');
       setState({ status: 'disconnected', address: null, noWallet: true });
       return;
     }

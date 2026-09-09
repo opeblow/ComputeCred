@@ -80,14 +80,15 @@ export default function AppShell() {
           ) : wallet.noWallet ? (
             <div className="mt-2 stack-ghost">
               <div className="small muted">
-                No wallet found — we opened the MetaMask download in a new tab. Install it (or any EIP-1193 wallet), then connect.
+                Still no wallet detected. Install MetaMask (or any EIP-1193 wallet), then <strong>reload this page</strong> with Ctrl+Shift+R
+                before connecting — extensions only inject after a reload.
               </div>
               <div className="flex">
                 <a className="btn outline sm" href="https://metamask.io/download/" target="_blank" rel="noreferrer">
                   Get MetaMask
                 </a>
                 <Button variant="outline" size="sm" onClick={() => void wallet.connect()}>
-                  I've installed it — connect
+                  Reload &amp; connect
                 </Button>
               </div>
             </div>
