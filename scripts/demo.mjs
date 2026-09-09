@@ -52,7 +52,8 @@ console.log('\n  key facts');
 console.log('  • facilityLimit = 50% × (eligible − max(0, largest − 40% × eligible))');
 console.log('  • a single-buyer operator books credit immediately (20% of revenue),');
 console.log('    and the line grows to 50% as the portfolio diversifies');
-console.log('  • every settlement auto-repays accrued debt before it adds revenue');
+console.log('  • verified revenue credits the eligible base — it never repays debt;');
+console.log('    outstandingDebt falls only when loan tokens are actually repaid into the vault');
 
 console.log(`\n${line}\n  Where next\n${line}\n`);
 const envFile = resolve(root, '.env');
@@ -62,11 +63,12 @@ if (existsSync(envFile)) {
   const witness = /PROOF_BUILDER_URL\s*=\s*(\S+)/.exec(env)?.[1];
   if (vault && witness && process.env.NODE_ENV !== 'test') {
     console.log('  Live deployment detected — run the proof pipeline:');
+    console.log('   1. npm run api:start        # read-layer API (serves the dashboard)');
     console.log(
-      `   1. npm run worker:start        # watch JobSettled → generate proofs → verifyAndRegister`
+      `   2. npm run worker:start      # watch JobSettled → generate proofs → verifyAndRegister`
     );
     console.log('      (or npm run worker:prove -- --tx <0xhash> for a one-shot submission)');
-    console.log('   2. npm run web:dev         # dashboard at http://localhost:5173');
+    console.log('   3. npm run web:dev           # dashboard at http://localhost:5173');
     console.log('      vault address preset from .env; connect a wallet to draw/repay\n');
   } else {
     console.log('  .env present but not fully configured — see docs/ATTESTCOIN_INTEGRATION.md\n');
@@ -74,8 +76,9 @@ if (existsSync(envFile)) {
 } else {
   console.log('  No .env yet — copy .env.example → .env, then:');
   console.log('   1. deploy JobMarket (Sepolia), TestUSDC + ComputeCredVault (CC3 testnet)');
-  console.log('   2. npm run worker:start     # proof pipeline (needs live CC3)');
-  console.log('   3. npm run web:dev          # dashboard: http://localhost:5173');
+  console.log('   2. npm run api:start        # read-layer API');
+  console.log('   3. npm run worker:start     # proof pipeline (needs live CC3)');
+  console.log('   4. npm run web:dev          # dashboard: http://localhost:5173');
   console.log('  Full live walkthrough: docs/ATTESTCOIN_INTEGRATION.md\n');
 }
 

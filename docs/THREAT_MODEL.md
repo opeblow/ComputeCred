@@ -13,7 +13,7 @@ We don't.
 | What the attacker controls | Why it fails | Where enforced |
 | --- | --- | --- |
 | A fake event from a contract they deploy | `log.address_` must equal the registered `jobMarket` | `_extractSettlement` guard 4 |
-| A forged transaction with no on-chain inclusion | the Block Prover precompile proves Merkle + continuity inclusion; nothing unproven reaches the app code | `ASCBase.execute` → `VERIFIER` precompile |
+| A forged transaction with no on-chain inclusion | the Block Prover precompile proves Merkle + continuity inclusion; nothing unproven reaches the app code | `verifyAndRegister` → `VERIFIER` precompile |
 | Replaying one real settlement forever | `processedQueries` (query id) at the ASC layer **and** `usedJobIds` at the vault layer | `ASCBase` + `_extractSettlement` guard 10 |
 | A settled job on a *different* JobMarket they own | registration is a single owner-set `registerSourceContract`; `_extractSettlement` pins topic/layout against that address | `_extractSettlement` guard 5 |
 | A `JobSettled` log that is actually some other event name | decoder filters by the pinned signature constant | `EvmV1Decoder.getLogsByEventSignature` |
@@ -23,12 +23,14 @@ We don't.
 ## 2. Attacker claims someone else's revenue
 
 Facilities are keyed to the operator. The `JobSettled` log's `operator` topic (indexed, part of the
-proven receipt) must equal `msg.sender` of the registration transaction. Because the topic is part
-of the attested data, the worker cannot swap it — no address malleability.
+proven receipt) must equal `msg.sender` of the registration transaction — or be an address the
+operator explicitly authorized via `setRelayer` (settlements only; a relayer can never draw, repay,
+or change policy). Because the topic is part of the attested data, the worker cannot swap it — no
+address malleability.
 
 | Attack | Enforced by |
 | --- | --- |
-| Submit another operator's settlement to my own facility | guard 9: `msg.sender == operator` |
+| Submit another operator's settlement to my own facility | guard 9: `msg.sender == operator` (or an operator-authorized relayer only) |
 | Register both sides (submit A's events to B's facility) | same guard — the operator address is the facility's identity |
 
 ## 3. Credit-policy manipulation
@@ -40,32 +42,36 @@ the operator never passes an amount. Attack surface here is the freshness window
 | Attack | Why it fails |
 | --- | --- |
 | Replay very old closure with high gross to inflate `lifetimeVerifiedRevenue` | data outside `[now − 30d, now + 3600]` reverts (guard 8) |
-| Rapidly flip old/new timestamps to game the window | every window computation reads a monotonic clock; each event is one-time use and age-pruned via `_deleteJobEvent` when it falls outside the window |
+| Rapidly flip old/new timestamps to game the window | every window computation reads a monotonic clock; each event is one-time use and age-pruned via `_pruneEvents` when it falls outside the window |
 | Register from a future block (future timestamp / shock) | `completedAt <= now + CLOCK_SKEW_TOLERANCE` (1h) |
 | Concentration evasion with many fake buyers | a fake buyer must still produce a real attested settlement paid by a real demand-side wallet; fabricating revenue is covered in section 1 |
 
 ## 4. The worker itself
 
-The worker holds the operator's CC3 private key, so **operator == worker wallet**. It has no
+The worker signs with the operator's CC3 key (or a scoped `WORKER_SUBMITTER_PRIVATE_KEY` +
+`WORKER_OPERATOR_ADDRESS`, so a hot submitter can be capped to settlement-with-authorized-relayer
+only — it can never draw, repay, or change policy via the vault's `setRelayer` model). It has no
 special powers beyond what the operator already has on the source chain, but defense-in-depth:
 
-- `usedJobIds(jobId)` read-before-submit to make the worker idempotent under crashes.
-- `processedTxs` in-process dedup; the streaming worker resubmits on transient failure but the
-  chain refuses duplicates (`processedQueries`).
-- The worker signs nothing — it only fires `execute`. Gas for the operation is paid by the
-  operator's account. If a malicious relay running the worker key replays a past proof, the chain
-  dedups it again (query id + jobId).
+- A durable sqlite store with CAS state transitions + an atomic scan checkpoint makes restart and
+  crash resume safe: a scanned chunk is deduplicated by `(chain, contract, tx, logIndex)` and the
+  checkpoint only advances with the persisted rows.
+- `usedJobIds(jobId)` read-before-submit to make the worker idempotent under crashes; the chain
+  refuses duplicates (`processedQueries` query ids, `usedJobIds` job ids).
+- The worker signs and broadcasts proofs via `verifyAndRegister`, so a malicious relay running the
+  worker key can replay a past proof exactly once: the chain dedups it (query id + jobId) and the
+  caller must still be the claimed operator's self or an authorized relayer.
 
 ## 5. Lender / liquidity side
 
 - The vault cannot mint — draws move actual `TestUSDC` (6-decimals, public mint on the test token)
   held in the contract; `draw` is capped by both the facility credit line **and** current vault
   liquidity.
-- There is deliberately **no liquidation log**: a late/defaulted operator simply cannot draw more,
-  new settlements auto-repay, and `lifetimeDebtRepaidByRevenue` over-credit is capped at
-  `lifetimeDebtRepaidByRevenue` (repaid-by-revenue never exceeds what was drawn). Under the 50%
-  advance-rate and 40% concentration haircut, revenue coverage of any draw is intended to be the
-  lender protection mechanism.
+- There is deliberately **no liquidation log of revenue-vs-debt since verified revenue is
+  credit, not repayment**: a late/defaulted operator simply cannot draw more; `outstandingDebt`
+  falls only when loan tokens are actually repaid into the vault, and `lifetimeRepaid` records
+  that. Under the 50% advance rate and 40% concentration haircut, revenue coverage of any draw is
+  intended to be the lender protection mechanism.
 
 ## 6. What we explicitly do not claim
 

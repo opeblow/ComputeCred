@@ -30,7 +30,7 @@ jobs:
       - name: Compile contracts
         run: npm run contracts:compile
 
-      - name: Typecheck (contracts + worker + web)
+      - name: Typecheck (contracts + worker + api + web)
         run: npm run typecheck
 
       - name: Run contract test suite (credit policy)
@@ -38,6 +38,9 @@ jobs:
 
       - name: Run worker tests
         run: npm run worker:test
+
+      - name: Run API (read-layer) tests
+        run: npm run api:test
 
       - name: Build web dashboard
         run: npm run web:build

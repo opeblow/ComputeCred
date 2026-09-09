@@ -25,6 +25,9 @@ contracts/coverage.json
 # --- Worker build output ---
 worker/dist/
 
+# --- Worker durable state (local sqlite; do not commit) ---
+worker-state/
+
 # --- Web build output ---
 web/dist/
 
