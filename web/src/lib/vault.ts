@@ -1,7 +1,6 @@
 import { ethers } from 'ethers';
 import vaultArtifact from '../../../contracts/artifacts/contracts/ComputeCredVault.sol/ComputeCredVault.json';
 
-// Deterministic type for the FacilityView struct returned by getFacilityView().
 export interface FacilityView {
   exists: boolean;
   verifiedRevenue: bigint;
@@ -14,7 +13,7 @@ export interface FacilityView {
   largestBuyerShareBps: bigint;
   lastVerifiedAt: bigint;
   lifetimeVerifiedRevenue: bigint;
-  lifetimeDebtRepaidByRevenue: bigint;
+  lifetimeRepaid: bigint;
   eventCount: bigint;
 }
 
@@ -30,20 +29,30 @@ export interface BuyerTotal {
   amount: bigint;
 }
 
+export interface FacilitySnapshot {
+  view: FacilityView | null;
+  policy: Policy | null;
+  buyers: BuyerTotal[];
+}
+
 export type VaultCallable = {
   getPolicy(): Promise<[bigint, bigint, bigint, bigint]>;
   getFacilityView(operator: string): Promise<FacilityView>;
   getBuyerTotals(operator: string): Promise<[string[], bigint[]]>;
   queryFilter(eventName: string, fromBlock: number, toBlock: number): Promise<ethers.EventLog[]>;
+  pauseBorrowing(): Promise<unknown>;
+  unpauseBorrowing(): Promise<unknown>;
+  openFacility(): Promise<unknown>;
+  provideLiquidity(amount: bigint): Promise<unknown>;
   draw(amount: bigint): Promise<unknown>;
   repay(amount: bigint): Promise<unknown>;
+  expectedSourceChainKey(): Promise<bigint>;
+  loanToken(): Promise<string>;
+  settlementAsset(): Promise<string>;
+  paused(): Promise<boolean>;
 };
 
 export const asVault = (c: ethers.Contract): VaultCallable => c as unknown as VaultCallable;
-
-export const decimal = (v: bigint): string => ethers.formatUnits(v, 6);
-export const bps = (v: bigint): string => `${(Number(v) / 100).toFixed(2)}%`;
-export const short = (a: string): string => `${a.slice(0, 6)}..${a.slice(-4)}`;
 
 const abi = (vaultArtifact as { abi: unknown }).abi as ethers.InterfaceAbi;
 
@@ -65,7 +74,7 @@ export async function getBuyerTotals(vault: VaultCallable, operator: string): Pr
   return buyers.map((buyer, i) => ({ buyer, amount: amounts[i] ?? 0n }));
 }
 
-// Last `limit` SettlementVerified events in ascending block order.
+/** Recent `SettlementVerified` logs (ascending). */
 export async function getRecentSettlements(
   vault: VaultCallable,
   fromBlock: number,
@@ -74,4 +83,13 @@ export async function getRecentSettlements(
 ): Promise<ethers.EventLog[]> {
   const events = await vault.queryFilter('SettlementVerified', fromBlock, toBlock);
   return events.slice(-limit);
+}
+
+export async function loadSnapshot(vault: VaultCallable, operator: string): Promise<FacilitySnapshot> {
+  const [policy, view, buyers] = await Promise.all([
+    getPolicy(vault),
+    vault.getFacilityView(operator),
+    getBuyerTotals(vault, operator),
+  ]);
+  return { view, policy, buyers };
 }
