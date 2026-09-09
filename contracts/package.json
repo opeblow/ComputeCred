@@ -1,0 +1,22 @@
+{
+  "name": "computecred-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "typecheck": "tsc --noEmit",
+    "deploy:sepolia": "hardhat run scripts/deploy-sepolia.ts --network sepolia",
+    "deploy:cc3": "hardhat run scripts/deploy-cc3.ts --network creditcoin",
+    "deploy:local": "hardhat run scripts/deploy-local.ts --network hardhat"
+  },
+  "devDependencies": {
+    "@gluwa/asc-contracts": "^0.2.1",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.1.0",
+    "dotenv": "^17.2.0",
+    "hardhat": "^2.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  }
+}
