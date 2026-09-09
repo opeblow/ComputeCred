@@ -14,12 +14,12 @@ import {
   Banner,
   Button,
   Badge,
-  EmptyState,
   Meter,
   Kv,
   Spinner,
   Skeleton,
 } from '../../../components/ui/primitives';
+import { ConfigGate } from '../../../components/ui/ConfigGate';
 import { TransactionSteps, TxResultBanner, type StepDef } from '../../../components/TransactionSteps';
 
 type Kind = 'draw' | 'repay' | 'liquidity';
@@ -39,11 +39,7 @@ export default function FacilityPage() {
 
   if (!isEnabled) {
     return (
-      <Card>
-        <EmptyState title="Operator not configured">
-          <p>Set the operator address and vault address in Settings to load the facility.</p>
-        </EmptyState>
-      </Card>
+      <ConfigGate title="Operator not configured">Set the operator address and vault address in Settings to load the facility.</ConfigGate>
     );
   }
 

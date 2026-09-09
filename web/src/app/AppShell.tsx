@@ -5,12 +5,12 @@ import { shortAddress } from '../lib/format';
 import { Button, Badge } from '../components/ui/primitives';
 
 const NAV = [
-  { to: '/', label: 'Overview', icon: '◧', end: true },
-  { to: '/facility', label: 'Facility', icon: '▤' },
-  { to: '/settlements', label: 'Settlements', icon: '≋' },
-  { to: '/buyers', label: 'Buyers', icon: '◍' },
-  { to: '/activity', label: 'Activity', icon: '∿' },
-  { to: '/settings', label: 'Settings', icon: '⚙' },
+  { to: '/app', label: 'Overview', icon: '◧', end: true },
+  { to: '/app/facility', label: 'Facility', icon: '▤' },
+  { to: '/app/settlements', label: 'Settlements', icon: '≋' },
+  { to: '/app/buyers', label: 'Buyers', icon: '◍' },
+  { to: '/app/activity', label: 'Activity', icon: '∿' },
+  { to: '/app/settings', label: 'Settings', icon: '⚙' },
 ];
 
 const TITLES: Record<string, { title: string; sub: string }> = {
@@ -26,7 +26,8 @@ export default function AppShell() {
   const { config } = useConfig();
   const wallet = useWallet();
   const location = useLocation();
-  const head = TITLES[location.pathname] ?? TITLES['/']!;
+  const path = location.pathname.replace(/^\/app/, '') || '/';
+  const head = TITLES[path] ?? TITLES['/']!;
 
   return (
     <div className="shell">
@@ -68,12 +69,34 @@ export default function AppShell() {
               <span className="mono small">{shortAddress(wallet.address!)}</span>
             </div>
           ) : wallet.status === 'error' && wallet.error ? (
-            <div className="small mt-2" style={{ color: 'var(--danger)' }}>{wallet.error}</div>
+            <div className="mt-2 stack-ghost">
+              <div className="small" style={{ color: 'var(--danger)' }}>
+                {wallet.error}
+              </div>
+              <Button variant="outline" size="sm" onClick={() => void wallet.connect()}>
+                Retry
+              </Button>
+            </div>
+          ) : wallet.noWallet ? (
+            <div className="mt-2 stack-ghost">
+              <div className="small muted">
+                No wallet found — we opened the MetaMask download in a new tab. Install it (or any EIP-1193 wallet), then connect.
+              </div>
+              <div className="flex">
+                <a className="btn outline sm" href="https://metamask.io/download/" target="_blank" rel="noreferrer">
+                  Get MetaMask
+                </a>
+                <Button variant="outline" size="sm" onClick={() => void wallet.connect()}>
+                  I've installed it — connect
+                </Button>
+              </div>
+            </div>
           ) : (
-            <div className="mt-2">
+            <div className="mt-2 stack-ghost">
               <Button variant="outline" size="sm" onClick={() => void wallet.connect()}>
                 {wallet.status === 'connecting' ? 'Connecting…' : 'Connect wallet'}
               </Button>
+              <div className="small muted">Read-only browsing — a wallet is only needed to sign draw/repay/liquidity.</div>
             </div>
           )}
         </div>

@@ -2,17 +2,14 @@ import { Link } from 'react-router-dom';
 import { useFacility } from '../../../hooks/useFacility';
 import { decimal, bps, shortAddress, share } from '../../../lib/format';
 import { Card, Skeleton, EmptyState, Banner, Meter, Badge } from '../../../components/ui/primitives';
+import { ConfigGate } from '../../../components/ui/ConfigGate';
 
 export default function BuyersPage() {
   const { snapshot, isLoading, isError, isEnabled } = useFacility();
 
   if (!isEnabled) {
     return (
-      <Card>
-        <EmptyState title="Operator not configured">
-          <p>Set the operator address and vault address in Settings to load buyer totals.</p>
-        </EmptyState>
-      </Card>
+      <ConfigGate title="Operator not configured">Set the operator address and vault address in Settings to load buyer totals.</ConfigGate>
     );
   }
 
@@ -107,7 +104,7 @@ export default function BuyersPage() {
       </Card>
 
       <p className="muted small">
-        <Link className="link-btn" to="/settlements">See the settlements feeding these totals →</Link>
+        <Link className="link-btn" to="/app/settlements">See the settlements feeding these totals →</Link>
       </p>
     </div>
   );

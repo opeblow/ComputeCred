@@ -4,6 +4,7 @@ import { useConfig } from '../../../hooks/useConfig';
 import type { SettlementRecord } from '../../../lib/api';
 import { decimal, formatDate, shortHash, statusMeta } from '../../../lib/format';
 import { Card, Badge, EmptyState, Banner, Skeleton } from '../../../components/ui/primitives';
+import { ConfigGate } from '../../../components/ui/ConfigGate';
 import { EvidenceDrawer } from '../../../components/EvidenceDrawer';
 
 const FILTERS = [
@@ -45,11 +46,7 @@ export default function SettlementsPage() {
   return (
     <div className="stack">
       {!operatorConfigured ? (
-        <Card>
-          <EmptyState title="Operator not configured">
-            <p>Set the operator address in Settings to see your settlements.</p>
-          </EmptyState>
-        </Card>
+        <ConfigGate title="Operator not configured">Set the operator address in Settings to see your settlements.</ConfigGate>
       ) : (
         <>
           <div className="flex-between">

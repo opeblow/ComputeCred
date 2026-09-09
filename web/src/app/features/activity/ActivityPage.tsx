@@ -2,6 +2,7 @@ import { useRecentActivity, useVerifiedEvents } from '../../../hooks/useFacility
 import { useConfig } from '../../../hooks/useConfig';
 import { decimal, shortHash, statusMeta, timeAgo } from '../../../lib/format';
 import { Card, Badge, EmptyState, Banner, Skeleton } from '../../../components/ui/primitives';
+import { ConfigGate } from '../../../components/ui/ConfigGate';
 
 export default function ActivityPage() {
   const { config } = useConfig();
@@ -15,9 +16,7 @@ export default function ActivityPage() {
   return (
     <div className="stack">
       {!operatorConfigured ? (
-        <Card>
-          <EmptyState title="Operator not configured" hint="Set the operator address in Settings to view activity for this facility." />
-        </Card>
+        <ConfigGate title="Operator not configured">Set the operator address in Settings to view activity for this facility.</ConfigGate>
       ) : api.isError ? (
         <Banner tone="warning">
           Read-layer API unavailable — showing on-chain activity only. Start the api workspace or check API_URL.

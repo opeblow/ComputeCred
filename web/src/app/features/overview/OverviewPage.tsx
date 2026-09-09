@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useFacility, useProofStatus, useRecentActivity } from '../../../hooks/useFacility';
 import { Card, Stat, Skeleton, Badge, EmptyState, Banner } from '../../../components/ui/primitives';
+import { ConfigGate } from '../../../components/ui/ConfigGate';
 import { decimal, bps, shortHash, statusMeta, timeAgo } from '../../../lib/format';
 import { useConfig } from '../../../hooks/useConfig';
 import type { Policy } from '../../../lib/vault';
@@ -17,14 +18,9 @@ export default function OverviewPage() {
 
   if (!isEnabled) {
     return (
-      <Card>
-        <EmptyState title="Operator not configured">
-          <p>Set the operator address and vault address in Settings to load the facility.</p>
-          <Link to="/settings" className="btn">
-            Open settings
-          </Link>
-        </EmptyState>
-      </Card>
+      <ConfigGate title="Operator not configured">
+        Set the operator address and vault address in Settings to load the facility.
+      </ConfigGate>
     );
   }
 
@@ -67,7 +63,7 @@ export default function OverviewPage() {
         <Card style={{ gridColumn: 'span 1' }}>
           <div className="section-title">
             <h2>Proof pipeline</h2>
-            <Link className="link-btn" to="/settlements">
+            <Link className="link-btn" to="/app/settlements">
               View all →
             </Link>
           </div>
@@ -83,7 +79,7 @@ export default function OverviewPage() {
         <Card>
           <div className="section-title">
             <h2>Recent activity</h2>
-            <Link className="link-btn" to="/activity">
+            <Link className="link-btn" to="/app/activity">
               Full log →
             </Link>
           </div>
